@@ -1,0 +1,84 @@
+name: Publish APT index
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: apt-index-main
+  cancel-in-progress: false
+
+jobs:
+  index:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check whether this is still main
+        id: main
+        run: |
+          head=$(git ls-remote https://github.com/ChinaOSProject/binaries.git refs/heads/main)
+          if [[ ${head%%$'\t'*} == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/cache@v5
+        if: steps.main.outputs.current == 'true'
+        with:
+          path: ${{ runner.temp }}/apt-controls
+          key: apt-controls-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: apt-controls-v1-
+
+      - name: Build and sign the package indexes
+        if: steps.main.outputs.current == 'true'
+        env:
+          APT_SIGNING_FINGERPRINT: ${{ vars.APT_SIGNING_FINGERPRINT }}
+          APT_SIGNING_KEY_B64: ${{ secrets.APT_SIGNING_KEY_B64 }}
+        run: |
+          : "${APT_SIGNING_KEY_B64:?Set the APT signing key secret}"
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          trap 'gpgconf --kill gpg-agent; rm -rf -- "$GNUPGHOME"' EXIT
+          printf '%s' "$APT_SIGNING_KEY_B64" | base64 --decode | gpg --batch --import
+          python3 apt/build-index.py --commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/apt-output" --cache "$RUNNER_TEMP/apt-controls"
+
+      - name: Publish objects, then switch the active snapshot
+        if: steps.main.outputs.current == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          APT_R2_BUCKET: ${{ vars.APT_R2_BUCKET || 'chinaos-apt-index' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.APT_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.APT_R2_SECRET_ACCESS_KEY }}
+        run: |
+          : "${CLOUDFLARE_ACCOUNT_ID:?Set the Cloudflare account ID variable}"
+          : "${AWS_ACCESS_KEY_ID:?Set the R2 access key ID secret}"
+          : "${AWS_SECRET_ACCESS_KEY:?Set the R2 secret access key}"
+          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          destination="s3://${APT_R2_BUCKET}"
+          aws s3 cp "$RUNNER_TEMP/apt-output/objects/" "$destination/" \
+            --endpoint-url "$endpoint" --recursive --only-show-errors
+          head=$(git ls-remote https://github.com/ChinaOSProject/binaries.git refs/heads/main)
+          if [[ ${head%%$'\t'*} == "$GITHUB_SHA" ]]; then
+            aws s3 cp "$RUNNER_TEMP/apt-output/current" "$destination/current" \
+              --endpoint-url "$endpoint" --only-show-errors
+          else
+            echo "main advanced while uploading. Keeping the previous active snapshot."
+          fi

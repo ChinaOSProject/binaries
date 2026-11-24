@@ -1,0 +1,12 @@
+{
+  "name": "chinaos-apt",
+  "main": "worker.mjs",
+  "compatibility_date": "2025-06-01",
+  "workers_dev": true,
+  "r2_buckets": [
+    {
+      "binding": "APT_INDEX",
+      "bucket_name": "chinaos-apt-index"
+    }
+  ]
+}
