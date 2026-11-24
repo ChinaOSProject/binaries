@@ -23,6 +23,10 @@ sudo apt-get update
 
 `.sources` 通过 `Signed-By` 限定仓库使用的公钥。仓库设为 `NotAutomatic` 和 `ButAutomaticUpgrades`，可以显式安装其软件包，并接收已安装包的更新。
 
+## GCC 13 运行库更名
+
+`chinaos-libgcc-s1` 是本仓库的私有 GCC 13 运行库，原名 `clash-libgcc-s1`。已安装旧包的设备在更新软件源后，可运行 `sudo apt install chinaos-libgcc-s1` 切换。新包继续满足已发布软件对旧包名的版本依赖，并与系统发行版的 `libgcc1` 并存。
+
 ## 首次部署
 
 1. 创建私有 R2 桶 `chinaos-apt-index`，创建一个仅能读写该桶对象的 R2 S3 API 凭据。若要使用其它桶名，同时修改 [Worker 配置](apt/wrangler.jsonc) 和下面的 `APT_R2_BUCKET`。
